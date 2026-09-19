@@ -11,14 +11,40 @@ machine without taking over the desktop you are using.
 
 ![Two rounds driven inside the ChatGPT desktop app: a question is typed and sent, the reply is captured offscreen](assets/screenshot-2-rounds.png)
 
+## What it saves
+
+These are readings, not estimates. DeepSeek Harness records `usage` on every assistant
+message, so the numbers below come from its own session log.
+
+| | One tool call per action | This plugin |
+|---|---|---|
+| An 8-action task (launch → wait → find → type → click → read back → capture) | **8+ model requests** | **1 model request** |
+| The conversation, re-sent | 8 times | **once** |
+| Measured: what one request re-sent | — | **185,404 tokens** for the 8-step batch call; in the same long session the per-request average was **437,542 tokens** (peak 473,134) |
+| Same task, in context tokens | 8 × 437k ≈ **3.5M** | ≈ 437k → **~3.06M less (88%)** |
+| Engine startup | ~800 ms **per call** (≈6.4 s for 8 calls) | ~800 ms once, then **40–100 ms per action** |
+| Seeing the result | screenshot, then a second `read_image` request | screenshot **returned inline in the same call** |
+| Wall clock for the 8-step task | — | **1 call, 1.4 s** of engine time, target window never in the foreground |
+
+The lever is the round trip, not the schema. Every request re-sends the entire
+conversation — that is what the provider bills as input on each turn, and it is why
+turning eight calls into one matters far more than shaving bytes off a tool definition.
+
+**And straight about the schema:** merging eight single-purpose tools into two made that
+block *bigger* — **4,149 → 6,977 characters**, because `computer`'s step schema documents
+41 fields. That block is a fixed prefix carried on every request and served from the prompt
+cache, and growing it is a deliberate trade: the field documentation is what lets the model
+write a whole `steps` array correctly on the first attempt. One avoided retry is worth far
+more than the prefix, since a retry is another full context re-send — the most expensive
+single request measured here was **386,879 uncached input tokens**.
+
 ## Why this one
 
 | | |
 |---|---|
-| **One round trip per task** | The `computer` tool takes a `steps` array and executes it inside one engine request. Five actions cost one model turn, not five — and every extra turn re-sends the whole conversation. |
-| **It does not take your desktop** | Input defaults to UI Automation patterns and Win32 messages, which reach a window without focusing it. Screenshots use `PrintWindow`, which captures a window that is covered. When physical input is unavoidable, the previous foreground window and cursor position are restored afterwards. |
-| **Warm engine** | A background engine holds the PowerShell/UIA setup, so `Add-Type` is paid once: measured **~800 ms per cold call → 40–100 ms per call**. It retires itself when idle (default 10 min) and carries a content fingerprint, so editing the engine takes effect on the next call. |
-| **Screenshots come back as images** | When the routed model declares image input, the PNG is attached to the tool result — no separate `read_image` round trip. |
+| **It does not take your desktop** | Input defaults to UI Automation patterns and Win32 messages, which reach a window without focusing it. Screenshots use `PrintWindow`, which captures a window that is covered. When physical input is unavoidable, the previous foreground window and cursor position are restored afterwards. `mode: "background"` refuses rather than silently taking your screen. |
+| **Steps address controls, not coordinates** | `find` locates a control and `as: "ref"` remembers it, so `click` and `type` name the control instead of you computing pixel positions from a screenshot. |
+| **A warm engine** | A background engine holds the PowerShell/UIA setup, so `Add-Type` is paid once. It retires itself when idle (default 10 min) and carries a content fingerprint, so editing the engine takes effect on the next call without a restart. |
 
 ## Tools
 
