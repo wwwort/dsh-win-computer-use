@@ -1,68 +1,68 @@
-{
-  "name": "dsh-win-computer-use",
-  "version": "0.1.0",
-  "description": "Windows-native computer use for DeepSeek Harness. One `computer` tool takes a list of steps (find element, click, type, wait, screenshot) and runs them inside a single engine request, so a whole task costs one model round trip instead of one per action. Input and screenshots default to focus-free paths (UI Automation patterns, Win32 messages, PrintWindow), and physical input hands the foreground window and cursor back afterwards.",
-  "type": "module",
-  "main": "./lib/index.js",
-  "types": "./lib/types/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./lib/types/index.d.ts",
-      "default": "./lib/index.js"
-    },
-    "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
-  "files": [
-    "lib",
-    "scripts",
-    "cordis.patch.yml"
-  ],
-  "license": "BSD-3-Clause",
-  "author": "wwwort",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/wwwort/dsh-win-computer-use.git"
-  },
-  "homepage": "https://github.com/wwwort/dsh-win-computer-use#readme",
-  "bugs": {
-    "url": "https://github.com/wwwort/dsh-win-computer-use/issues"
-  },
-  "keywords": [
-    "deepseek",
-    "harness",
-    "dsh",
-    "dsh-plugin",
-    "computer-use",
-    "windows",
-    "ui-automation",
-    "uiautomation",
-    "desktop-automation",
-    "gui-automation",
-    "screenshot"
-  ],
-  "engines": {
-    "dsh": ">=0.1.0-rc.1 <0.2.0-0"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-tools": ">=0.1.0-0 <0.1.1-0 || >=0.1.1-0 <0.1.2-0 || >=0.1.2-0 <0.1.3-0 || >=0.1.3-0 <0.1.4-0 || >=0.1.4-0 <0.1.5-0 || >=0.1.5-0 <0.1.6-0 || >=0.1.6-0 <0.1.7-0 || >=0.1.7-0 <0.1.8-0 || >=0.1.8-0 <0.2.0-0"
-  },
-  "devDependencies": {
-    "@types/node": "^24.13.3",
-    "typescript": "^5.9.0"
-  },
-  "scripts": {
-    "build": "bash scripts/build.sh",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "preflight": "node scripts/preflight.mjs",
-    "prepublishOnly": "node scripts/preflight.mjs"
-  },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/"
-  }
+﻿{
+    "name":  "dsh-win-computer-use",
+    "version":  "0.1.1",
+    "description":  "Windows-native computer use for DeepSeek Harness. One `computer` tool takes a list of steps (find element, click, type, wait, screenshot) and runs them inside a single engine request, so a whole task costs one model round trip instead of one per action. Input and screenshots default to focus-free paths (UI Automation patterns, Win32 messages, PrintWindow), and physical input hands the foreground window and cursor back afterwards.",
+    "type":  "module",
+    "main":  "./lib/index.js",
+    "types":  "./lib/types/index.d.ts",
+    "exports":  {
+                    ".":  {
+                              "types":  "./lib/types/index.d.ts",
+                              "default":  "./lib/index.js"
+                          },
+                    "./cordis.patch.yml":  "./cordis.patch.yml",
+                    "./package.json":  "./package.json"
+                },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            },
+    "files":  [
+                  "lib",
+                  "scripts",
+                  "cordis.patch.yml"
+              ],
+    "license":  "BSD-3-Clause",
+    "author":  "wwwort",
+    "repository":  {
+                       "type":  "git",
+                       "url":  "git+https://github.com/wwwort/dsh-win-computer-use.git"
+                   },
+    "homepage":  "https://github.com/wwwort/dsh-win-computer-use#readme",
+    "bugs":  {
+                 "url":  "https://github.com/wwwort/dsh-win-computer-use/issues"
+             },
+    "keywords":  [
+                     "deepseek",
+                     "harness",
+                     "dsh",
+                     "dsh-plugin",
+                     "computer-use",
+                     "windows",
+                     "ui-automation",
+                     "uiautomation",
+                     "desktop-automation",
+                     "gui-automation",
+                     "screenshot"
+                 ],
+    "engines":  {
+                    "dsh":  "\u003e=0.1.0-rc.1 \u003c0.2.0-0"
+                },
+    "peerDependencies":  {
+                             "@deepseek-ai/dsh-tools":  "\u003e=0.1.0-0 \u003c0.1.1-0 || \u003e=0.1.1-0 \u003c0.1.2-0 || \u003e=0.1.2-0 \u003c0.1.3-0 || \u003e=0.1.3-0 \u003c0.1.4-0 || \u003e=0.1.4-0 \u003c0.1.5-0 || \u003e=0.1.5-0 \u003c0.1.6-0 || \u003e=0.1.6-0 \u003c0.1.7-0 || \u003e=0.1.7-0 \u003c0.1.8-0 || \u003e=0.1.8-0 \u003c0.2.0-0"
+                         },
+    "devDependencies":  {
+                            "@types/node":  "^24.13.3",
+                            "typescript":  "^5.9.0"
+                        },
+    "scripts":  {
+                    "build":  "bash scripts/build.sh",
+                    "typecheck":  "tsc -p tsconfig.json --noEmit",
+                    "preflight":  "node scripts/preflight.mjs",
+                    "prepublishOnly":  "node scripts/preflight.mjs"
+                },
+    "publishConfig":  {
+                          "registry":  "https://registry.npmjs.org/"
+                      }
 }
