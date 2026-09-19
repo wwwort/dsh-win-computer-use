@@ -1,9 +1,11 @@
-# @dsh-external/dsh-computer-use —— DSH 的电脑操控能力
+# dsh-win-computer-use —— DSH 的 Windows 电脑操控能力
 
-> 状态：✅ 已交付 · 已注入实测（2026-09-19 后台化 + 批量执行改造）
+> 状态：✅ 已交付 · 已注入实测 · **发布件就绪（本地合规化，2026-09-19）**
 > 补记：脚手架 `dev_scaffold_plugin` 生成时**没写状态段**，而 `doc-guard.mjs` 的 C1 要求编号目录下每份
 > `.md` 前 10 行内有 `> 状态：…`；本文件此前被外部改动补过一行状态段（批注自称 2026-09-25），
 > 现随正式 README 一并重写，正文为本插件实况。
+> 本目录已从 `@dsh-external/dsh-computer-use`（沙箱内私有名）改名为 **`dsh-win-computer-use`**，
+> 并成为一个**独立的本地 git 仓库**（尚未推远端）。
 
 让 DSH 拥有与 Codex Computer Use 对等的电脑操控：**看屏幕、点控件、打字、管窗口与进程**，
 并让这些动作**不占用用户桌面**、**一次调用做完一整串**。
@@ -75,23 +77,58 @@ ANSI 解码搞坏，参数与结果都走 UTF-8 文件 / loopback TCP）；**卡
 | `mode:"background"` 严格性 | `{op:"key", mode:"background"}` 明确报错（无后台实现），**不静默改成抢焦点** |
 | 元素定位 | UIA 全树可用：Edge/Chromium 的按钮带中文名与 `AutomationId`（`view_7`），WinForms 老控件按 `class_name` 定位并经句柄操作 |
 
-## 构建与注入
+## 构建
+
+`lib/` 是**预构建产物且已提交**，使用者不需要构建。要自己重新构建：
 
 ```bash
-# 本机 checkout 是未编译的源码树，dsh-tools 的 junction 必须指向**已编译**副本（见 build.sh 的 link_pkg_built）
-DSH_CHECKOUT=D:\deepseek-harness bash scripts/build.sh
-# 本机 bash 不在 PATH，用 Git 自带的：
-#   "C:\Program Files\Git\bin\bash.exe" scripts/build.sh
+DSH_CHECKOUT=<dsh 源码 checkout> bash scripts/build.sh
+node scripts/preflight.mjs        # 发布前守卫：校验 dsh.bundle 清单与真实入包清单
 ```
 
-注入/热重载走 DSH 注入器：`dev_inject_plugin` / `dev_reload_package`。
-`win.ps1` 是运行时读取的，**改它不需要重新编译**（指纹机制会让下一次调用换用新代码）。
+构建脚本会把 `node_modules/@deepseek-ai/dsh-tools` 指向 checkout 里的**已编译**副本 —— 源码树常常没 build 过，
+指向未编译副本会让 `tsc` 报 TS2307、运行期 `import` 也会崩。
 
-> ⚠️ 已知环境坑：`dev_build_plugin` 在本机**找不到 checkout**（它只探测 `$HOME/dsh-harness`、`$HOME/dsh`、
-> `$HOME/.dsh/dsh-harness`，而本机是 `D:\deepseek-harness`），且它 `spawnSync('bash', ...)`，而 bash 不在
-> DSH 进程的 PATH 里 —— 两个原因叠加，导致它必然报 `未找到 DSH checkout`。上面那两行命令是可用的替代路径
-> （注入器本体在 `~/.dsh/profiles/web/node_modules/@dsh-external/dsh-super-injector/lib/index.js`，
-> 探测逻辑在 9206–9217 行、构建入口在 9358–9390 行）。
+`scripts/win.ps1` 是运行时读取的，**改它不需要重新编译**：守护进程带脚本内容指纹（SHA-256），
+下一次调用会自动退休旧进程并换用新代码。
+
+## 发布就绪度（2026-09-19 本地合规化）
+
+目标形态：开源到 GitHub + 进 DSH 社区插件市场（`dshmarket` 的目录来自策展仓库
+[`awesome-dsh-plugin`](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)，收录靠**提一个 YAML 文件**的 PR）。
+**注意：收录的硬门槛是 `dsh.bundle` manifest，不是"名字里带 dsh"**——后者只是生态惯例。
+
+已做（全部本地，零公开副作用）：
+
+| 项 | 说明 |
+|---|---|
+| `dsh.bundle` + `cordis.patch.yml` | 官方原话：最常见的被拒原因是只声明了 `dsh.client`。本文件的 YAML 已用 js-yaml 实测解析为**顶层数组**且 `insert.name` 与包名一致 |
+| 包名 `dsh-win-computer-use` | 去掉 `private`；该名在 npm 上**实测可用**（`dsh-computer-use` 与 `dsh-computer-use-win` 均已被占） |
+| **`files` 补上 `scripts`** | 原 `files:["lib"]` 会让用户装上后**每一次调用都失败**（`engine script is missing`）——引擎在 `scripts/win.ps1`，不在 `lib/` |
+| `scripts/preflight.mjs` | 打包守卫：静态检查 + 真实 `npm pack --dry-run` 的入包清单断言（含 `scripts/win.ps1`），挂 `prepublishOnly`，**只在发布侧跑**，不会在用户机器上执行 |
+| LICENSE | BSD-3-Clause（此前 package.json 声明了但文件不存在） |
+| `repository` / `homepage` / `bugs` / `keywords` | 发 npm 时包必须能指回收录仓库，否则两者不关联 |
+| `peerDependencies` 改写 | 旧写法 `>=0.0.1-rc <2` 实测**匹配不上本机的 `0.1.5-rc.2`**（node-semver 的预发布元组规则），**官方文档给的那个示例范围同样漏掉它**。现按生态成熟做法（`@mars-sea/dsh-commandcode-provider`）**逐 tuple 枚举**：`>=0.1.0-0 <0.1.1-0 \|\| … \|\| >=0.1.8-0 <0.2.0-0`，实测覆盖全部 0.1.x 稳定版与预发布版 |
+| `.gitattributes` 强制 LF | 本机 `core.autocrlf=true`，不锁行尾则 clone 出来的 `scripts/build.sh` 是 CRLF，bash 会在 `set -euo pipefail` 处报 `invalid option name` |
+| `lib/` 改为提交 | 构建需要 DSH 源码 checkout（用户没有），所以预构建产物必须进仓库，否则源码安装装到一个没有入口的包 |
+| 独立 git 仓库 | `git init -b main` + 首次提交（18 个文件，入库存 LF） |
+| 产物级验证 | `npm pack` → 解包 → 按宿主布局补上 peer → `apply()` → 真实调用 `computer` 三步成功（`scripts/win.ps1` 从打包路径正确解析） |
+
+未做（发布前需要）：
+
+| 项 | 说明 |
+|---|---|
+| 建公开仓库并推代码 | `github.com/wwwort/dsh-win-computer-use`；仓库加 `dsh-plugin` topic；创建满 1 天后才满足收录门槛（CI 自动检查） |
+| 打 Release 预构建 tarball | 附件名**不带版本号**（`latest/download/` 按字面取文件名，带版本号会在下次发版时静默 404），或钉 tag |
+| npm 发布（可选） | 本机 npm 未登录（`ENEEDAUTH`）；不发也走得通——`tarball:` 是官方一等公民路径 |
+| 提收录 PR | 在 `awesome-dsh-plugin` 加 `data/plugins/wwwort__dsh-win-computer-use.yml`（一个 PR 最多 3 条），`category: tools` |
+| `screenshots.json`（可选） | 需要**不含隐私内容**的截图；本次实测截的都是用户自己的 ChatGPT 会话，不可发布 |
+
+> 竞争现状（评审会看「是否已被现有条目覆盖」，规则是**谁更好谁留**、不是先到先得）：
+> 市场里已有 **4 条同名 `dsh-computer-use`** —— macOS 那条 46★/2396 下载、跨平台那条 33★/884 下载、
+> 另有一条 Linux X11、一条 Playwright/CDP+macOS（其描述也主打"不抢前台"）。
+> 所以条目描述里必须写清**可对着代码核**的差异：Windows 原生零依赖（不要 Python / Playwright / 辅助功能授权）、
+> 免聚焦三层、**单工具批量 steps（一次调用一轮模型往返）**、常驻引擎、PrintWindow 离屏截图 + 图片内联返回。
 
 ## 已知边界
 
