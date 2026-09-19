@@ -1,0 +1,10 @@
+# Dependencies are linked by the build script, never committed.
+node_modules/
+*.tsbuildinfo
+*.tgz
+
+# `lib/` is DELIBERATELY committed. The TypeScript build needs a DSH source
+# checkout (see scripts/build.sh), which a user installing from GitHub does not
+# have -- so the compiled output has to be in the repository, or a source
+# install produces a package whose entry point is missing.
+!lib/

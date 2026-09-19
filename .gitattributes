@@ -1,0 +1,10 @@
+# Force LF in the repository for everything.
+#
+# Not cosmetic: `scripts/build.sh` is a bash script, and a CRLF checkout makes
+# bash fail on line 3 with "invalid option name" (the `\r` lands inside
+# `set -euo pipefail`). Windows' git defaults to autocrlf=true, so without this
+# a clone on the author's own machine produces a build script that cannot run.
+#
+# `scripts/win.ps1` is fine either way (PowerShell accepts LF), and keeping it LF
+# matches the bytes the ASCII guard and the release tarball were verified with.
+* text=auto eol=lf

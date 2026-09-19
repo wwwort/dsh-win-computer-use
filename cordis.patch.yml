@@ -1,0 +1,10 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# Read by DSH when this package appears in the profile's `dsh.profile.bundles`
+# list (that is what `dsh plugin add dsh-win-computer-use` wires up). Without a
+# `dsh.bundle` manifest in package.json this file is never consulted and the
+# package installs as a plain dependency that does nothing -- which is the
+# single most common reason a submission to the community catalog is rejected.
+- insert:
+    - id: dsh-win-computer-use
+      name: 'dsh-win-computer-use'
