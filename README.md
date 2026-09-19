@@ -156,6 +156,42 @@ Chromium app does not mean the control is absent; it can mean the tree was never
 changing (measured: 4 polls, 2.6 s on a settled page). And when the element tree is gone, writing can
 still work — `focus` plus a physical `type` reaches the composer with real keystrokes.
 
+### Writing without the element tree
+
+The other half of the same problem: when Chromium's tree collapses there is no element to address,
+and activating a window does **not** give its input box keyboard focus — keystrokes sent after a
+plain activation are dropped, `Ctrl+A` selects nothing, and Enter goes to whatever the app itself
+had focused. That last one is exactly how a "sent" message quietly never sends.
+
+So `type` and `key` accept an `x`/`y` point and **click it first**, which is what actually transfers
+keyboard focus:
+
+```jsonc
+{"op": "type", "window": "ChatGPT", "mode": "physical", "x": 1436, "y": 1205,
+ "text": "...", "verify": true}                       // click to focus, real keys, read back
+{"op": "key", "keys": "enter", "window": "ChatGPT", "x": 1436, "y": 1205}
+```
+
+Measured on the ChatGPT app with its element tree down to 13 nodes: `strategy: "physical.keystrokes"`,
+`focusClick: true`, `verified: true`, and the text present in the composer afterwards. Long text can
+go `"via": "clipboard"` — one clipboard write plus Ctrl+V instead of thousands of `SendInput` records
+(the previous clipboard text is saved and restored).
+
+Combined, a chat round needs no element tree at all: click-and-type, Enter, `wait text_stable`, `read`.
+
+Two more things that only showed up under real use:
+
+- **The foreground is returned once per call, not once per step.** Restoring it between steps of the
+  same batch hands the foreground to the user's window and the target app loses control-level focus —
+  so the next step's Enter or Ctrl+A lands nowhere. That is exactly how a "send" quietly does nothing.
+  Now the cursor is restored after every physical step and the foreground at the end of the call
+  (reported as `foregroundRestored`); a step with `restore: false` opts out, which is how "leave this
+  app in front" is expressed.
+- **Pure stability settles on "still working".** `wait state: "text_stable"` was measured settling on
+  the ChatGPT app's *"正在回应"* placeholder — a stable short string — and returning a reply that had
+  not arrived. Pass guards:
+  `{"op":"wait","state":"text_stable","absent":"正在回应","contains":"ChatGPT 说"}`.
+
 ## How background operation works
 
 `mode` defaults to `"auto"`: try the focus-free layers first, fall back to physical input.

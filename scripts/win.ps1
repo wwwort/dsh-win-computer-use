@@ -342,6 +342,16 @@ function Restore-Pointer($s) {
   } catch { }
 }
 
+# Cursor only. The foreground is put back ONCE, at the end of the call, never
+# between steps of the same batch: restoring it mid-batch hands the foreground to
+# the user's window and the target app loses control-level focus, so the next
+# step's Enter or Ctrl+A lands nowhere. That is precisely how a "send" silently
+# does nothing. (Cost: one wrong conclusion and one unsent message.)
+function Restore-Cursor($s) {
+  if ($null -eq $s) { return }
+  try { [void][N]::SetCursorPos([int]$s.x, [int]$s.y) } catch { }
+}
+
 # ------------------------------------------------------------------ UIA layer
 
 $script:PatternCache = $null
@@ -806,16 +816,26 @@ function Wait-TextStable($a) {
   $timeout = [int](Get-Arg $a 'timeout_ms' 60000)
   $interval = [int](Get-Arg $a 'interval_ms' 800)
   $stable = [int](Get-Arg $a 'stable_ms' 2500)
+  # Purity is not enough: "still working" is often a stable short placeholder,
+  # so a plain stability test happily settles on "ChatGPT is responding" and
+  # reports a reply that has not arrived. These two guards let the caller say
+  # what finished text cannot contain, and what it must contain.
+  $absent = [string](Get-Arg $a 'absent' '')
+  $contains = [string](Get-Arg $a 'contains' '')
   $sw = [System.Diagnostics.Stopwatch]::StartNew()
   $previous = $null
   $held = 0
   $polls = 0
+  $blocked = ''
   while ($true) {
     $polls++
     $current = [string](Do-Read $a $null).text
     if ($null -ne $previous -and $current -eq $previous) { $held += $interval } else { $held = 0 }
     $previous = $current
-    if ($current -and $held -ge $stable) {
+    $guardOk = $true
+    if ($absent -and $current -like "*$absent*") { $guardOk = $false; $blocked = "text still contains '$absent'" }
+    if ($contains -and $current -notlike "*$contains*") { $guardOk = $false; $blocked = "text does not contain '$contains' yet" }
+    if ($current -and $held -ge $stable -and $guardOk) {
       return [ordered]@{
         ok        = $true
         state     = 'text_stable'
@@ -826,33 +846,57 @@ function Wait-TextStable($a) {
       }
     }
     if ($sw.ElapsedMilliseconds -ge $timeout) {
-      throw ("text never settled within " + $timeout + "ms (" + $polls + " reads); pass timeout_ms or check the window")
+      $why = $(if ($blocked) { "; guard never satisfied: " + $blocked } else { "; the text never held still for " + $stable + "ms" })
+      throw ("text never settled within " + $timeout + "ms (" + $polls + " reads)" + $why + " -- raise timeout_ms, raise stable_ms, or pass absent/contains guards for this app")
     }
     Start-Sleep -Milliseconds $interval
   }
+}
+
+# Move the pointer and PROVE it arrived. Setting a pointer is not atomic with
+# clicking or typing: a human (or another process) can move it in between, and
+# the input then lands somewhere else entirely. Fail closed.
+function Set-PointerVerified([int]$x, [int]$y) {
+  [void][N]::SetCursorPos($x, $y)
+  for ($i = 0; $i -lt 12; $i++) {
+    Start-Sleep -Milliseconds 40
+    $probe = New-Object N+POINT
+    [void][N]::GetCursorPos([ref]$probe)
+    if ([Math]::Abs($probe.X - $x) -le 2 -and [Math]::Abs($probe.Y - $y) -le 2) { return }
+  }
+  $now = New-Object N+POINT
+  [void][N]::GetCursorPos([ref]$now)
+  throw ("refusing to act: pointer did not reach (" + $x + "," + $y + "); it is at (" + $now.X + "," + $now.Y + ") -- something else is moving the mouse")
+}
+
+function Click-AtPoint([int]$x, [int]$y) {
+  [N]::mouse_event($MOUSEEVENTF.leftdown, 0, 0, 0, [UIntPtr]::Zero)
+  [N]::mouse_event($MOUSEEVENTF.leftup, 0, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 120
+}
+
+# Give a control keyboard focus the only way that works: click it. Activating a
+# window is NOT enough -- measured on the ChatGPT desktop app, keystrokes sent
+# after a plain activation were dropped, and Ctrl+A selected nothing.
+# Returns the point it clicked, or $null when the caller named no target.
+function Focus-ControlByClick($a, $found) {
+  $px = Get-Arg $a 'x' $null
+  $py = Get-Arg $a 'y' $null
+  if (($null -eq $px -or $null -eq $py) -and $null -ne $found) {
+    $rect = $found.item.rect
+    if ($rect.valid) { $px = $rect.cx; $py = $rect.cy }
+  }
+  if ($null -eq $px -or $null -eq $py) { return $null }
+  Set-PointerVerified ([int]$px) ([int]$py)
+  Click-AtPoint ([int]$px) ([int]$py)
+  return @{ x = [int]$px; y = [int]$py }
 }
 
 function Do-PhysicalClick([int]$x, [int]$y, [string]$button, [int]$count, [bool]$restore, [IntPtr]$window) {
   $saved = $null
   if ($restore) { $saved = Save-Pointer }
   if ($window -ne [IntPtr]::Zero) { [void][N]::ForceForeground($window) }
-  [void][N]::SetCursorPos($x, $y)
-  # Prove the pointer actually reached the requested spot BEFORE acting. Setting
-  # a pointer is not atomic with clicking: a human (or another process) can move
-  # it in between, and the click then lands somewhere else entirely.
-  $arrived = $false
-  for ($i = 0; $i -lt 12; $i++) {
-    Start-Sleep -Milliseconds 40
-    $probe = New-Object N+POINT
-    [void][N]::GetCursorPos([ref]$probe)
-    if ([Math]::Abs($probe.X - $x) -le 2 -and [Math]::Abs($probe.Y - $y) -le 2) { $arrived = $true; break }
-  }
-  if (-not $arrived) {
-    $now = New-Object N+POINT
-    [void][N]::GetCursorPos([ref]$now)
-    Restore-Pointer $saved
-    throw ("refusing to act: pointer did not reach (" + $x + "," + $y + "); it is at (" + $now.X + "," + $now.Y + ") -- something else is moving the mouse")
-  }
+  try { Set-PointerVerified $x $y } catch { Restore-Cursor $saved; throw }
   switch ($button) {
     'right'  { [N]::mouse_event($MOUSEEVENTF.rightdown, 0, 0, 0, [UIntPtr]::Zero); [N]::mouse_event($MOUSEEVENTF.rightup, 0, 0, 0, [UIntPtr]::Zero) }
     'middle' { [N]::mouse_event($MOUSEEVENTF.middledown, 0, 0, 0, [UIntPtr]::Zero); [N]::mouse_event($MOUSEEVENTF.middleup, 0, 0, 0, [UIntPtr]::Zero) }
@@ -868,7 +912,7 @@ function Do-PhysicalClick([int]$x, [int]$y, [string]$button, [int]$count, [bool]
   Start-Sleep -Milliseconds 120
   $after = New-Object N+POINT
   [void][N]::GetCursorPos([ref]$after)
-  Restore-Pointer $saved
+  Restore-Cursor $saved
   return [ordered]@{
     ok                = $true
     strategy          = 'physical'
@@ -879,24 +923,97 @@ function Do-PhysicalClick([int]$x, [int]$y, [string]$button, [int]$count, [bool]
   }
 }
 
-function Do-PhysicalType([string]$text, [IntPtr]$window, [bool]$restore) {
+# Physical typing, complete: activate -> give the control keyboard focus -> type
+# -> read back and say whether it landed.
+#
+# Why the extra steps: activating a window does NOT give its input control
+# keyboard focus. Measured on the ChatGPT desktop app, `focus` + keystrokes was
+# silently dropped because the composer never had focus -- while clicking it
+# first worked. And when Chromium's element tree collapses (it does: one
+# measurement found 13 nodes left, caption buttons only) there is no element to
+# address at all, so an explicit x/y is the only way in.
+function Do-PhysicalTypeEx($a, $found, $state) {
+  $text = [string](Get-Arg $a 'text' '')
+  $restore = [bool](Get-Arg $a 'restore' $true)
+  $wantPid = Get-Arg $a 'pid' 0
+  $win = [string](Get-Arg $a 'window' '')
+  $via = [string](Get-Arg $a 'via' 'keys')
+  $target = [IntPtr]::Zero
+  if ($null -ne $found) { $target = Get-ElementHwnd $found }
+  elseif ($win -or $wantPid) { $target = Get-OptionalWindow $win $wantPid }
+
   $saved = $null
   if ($restore) { $saved = Save-Pointer }
-  if ($window -ne [IntPtr]::Zero) {
-    [void][N]::ForceForeground($window)
-    for ($i = 0; $i -lt 24; $i++) {
-      if ([N]::GetForegroundWindow() -eq $window) { break }
-      Start-Sleep -Milliseconds 50
+  try {
+    if ($target -ne [IntPtr]::Zero) {
+      [void][N]::ForceForeground($target)
+      for ($i = 0; $i -lt 24; $i++) {
+        if ([N]::GetForegroundWindow() -eq $target) { break }
+        Start-Sleep -Milliseconds 50
+      }
+      if ([N]::GetForegroundWindow() -ne $target) {
+        throw ("refusing to type: could not bring the target window to the foreground (handle " + [int64]$target + ")")
+      }
     }
-    if ([N]::GetForegroundWindow() -ne $window) {
-      Restore-Pointer $saved
-      throw ("refusing to type: could not bring the target window to the foreground (handle " + [int64]$window + ")")
+
+    # A click is what actually hands keyboard focus to a control. Prefer the
+    # explicit point, else the addressed element's centre.
+    $clicked = Focus-ControlByClick $a $found
+    $focusClick = ($null -ne $clicked)
+    if ($focusClick) { $px = $clicked.x; $py = $clicked.y }
+
+    $route = 'physical.keystrokes'
+    if ($via -eq 'clipboard') {
+      # Long text (or CJK) is far faster pasted than typed: one clipboard write
+      # and a Ctrl+V instead of thousands of SendInput records.
+      $previous = $null
+      $hadClip = $false
+      try { $previous = Get-Clipboard -Raw -ErrorAction Stop; $hadClip = $true } catch { $hadClip = $false }
+      Set-Clipboard -Value $text
+      Start-Sleep -Milliseconds 60
+      [void](Send-KeyCombo 'ctrl+v' 1)
+      Start-Sleep -Milliseconds 350
+      if ($hadClip -and $null -ne $previous) { try { Set-Clipboard -Value $previous } catch { } }
+      $route = 'physical.clipboard'
+    } else {
+      [N]::TypeUnicode($text)
+    }
+    Start-Sleep -Milliseconds 120
+  } finally {
+    Restore-Cursor $saved
+  }
+
+  $result = [ordered]@{
+    ok              = $true
+    strategy        = $route
+    chars           = $text.Length
+    focusClick      = $focusClick
+    pointerRestored = [bool]$restore
+  }
+  if ($focusClick) { $result.clickedAt = [ordered]@{ x = [int]$px; y = [int]$py } }
+
+  # Read back when asked. contenteditable fields update their accessibility text
+  # lazily, so this needs a settle and the answer is best-effort, not a proof.
+  if ([bool](Get-Arg $a 'verify' $false)) {
+    Start-Sleep -Milliseconds ([int](Get-Arg $a 'verify_delay_ms' 500))
+    $probe = @{}
+    foreach ($k in @('window', 'pid', 'region', 'depth', 'max_nodes')) {
+      if ($null -ne (Get-Arg $a $k $null)) { $probe[$k] = Get-Arg $a $k $null }
+    }
+    if ($null -ne $found) { $probe['window'] = $win }
+    $seen = ''
+    try { $seen = [string](Do-Read $probe $null).text } catch { $seen = '' }
+    if (-not $seen) {
+      $result.verified = $null
+      $result.note = 'typed, but no text could be read back from this window to confirm it (pass window/pid, or confirm with {op:"read"})'
+    } else {
+      $result.verified = ($seen -like "*$text*")
+      if (-not $result.verified) {
+        $result.note = 'the typed text is not in the window text yet; contenteditable fields update lazily, so re-read with {op:"read"} before concluding it failed'
+      }
     }
   }
-  [N]::TypeUnicode($text)
-  Start-Sleep -Milliseconds 80
-  Restore-Pointer $saved
-  return [ordered]@{ ok = $true; strategy = 'physical.keystrokes'; chars = $text.Length; pointerRestored = [bool]$restore }
+  return $result
 }
 
 # ------------------------------------------------------------------- actions
@@ -1102,7 +1219,7 @@ function Do-Mouse($a) {
     if (-not $arrived) {
       $now = New-Object N+POINT
       [void][N]::GetCursorPos([ref]$now)
-      Restore-Pointer $saved
+      Restore-Cursor $saved
       throw ("refusing to act: pointer did not reach (" + [int]$x + "," + [int]$y + "); it is at (" + $now.X + "," + $now.Y + ") -- something else is moving the mouse")
     }
   }
@@ -1149,7 +1266,7 @@ function Do-Mouse($a) {
   Start-Sleep -Milliseconds 120
   $after = New-Object N+POINT
   [void][N]::GetCursorPos([ref]$after)
-  Restore-Pointer $saved
+  Restore-Cursor $saved
   $under = [N]::WindowFromPoint($after)
   return [ordered]@{
     ok                = $true
@@ -1216,8 +1333,11 @@ function Do-Keyboard($a) {
   if ($act -eq 'type') {
     $text = [string](Get-Arg $a 'text' '')
     if (-not $text) { throw "keyboard type requires 'text'" }
+    $typeArgs = @{ text = $text; restore = $restore; via = 'keys' }
+    if ($win) { $typeArgs.window = $win }
+    if ($wantPid) { $typeArgs.pid = $wantPid }
     $out = [ordered]@{ ok = $true; action = 'type'; chars = $text.Length }
-    for ($i = 0; $i -lt [Math]::Max(1, $repeat); $i++) { [void](Do-PhysicalType $text $target $restore) }
+    for ($i = 0; $i -lt [Math]::Max(1, $repeat); $i++) { [void](Do-PhysicalTypeEx $typeArgs $null $null) }
     $out.foregroundWindow = (Get-WindowInfo ([N]::GetForegroundWindow()))
     return $out
   }
@@ -1228,7 +1348,7 @@ function Do-Keyboard($a) {
     if ($restore) { $saved = Save-Pointer }
     if ($target -ne [IntPtr]::Zero) { [void](Focus-Target $win $wantPid) }
     $vks = Send-KeyCombo $keys $repeat
-    Restore-Pointer $saved
+    Restore-Cursor $saved
     return [ordered]@{ ok = $true; action = 'press'; combo = $keys; vks = $vks; foregroundWindow = (Get-WindowInfo ([N]::GetForegroundWindow())) }
   }
   throw "unknown keyboard action '$act' (type|press)"
@@ -1398,10 +1518,10 @@ function Do-Type($a, $state) {
   if ($null -eq $found) {
     if ($mode -eq 'background') {
       # Address the control, not the window: WM_SETTEXT to a top-level window
-      # would rename it. Say that plainly instead of attempting it.
-      throw "background type needs a field to write into: pass name / name_contains / automation_id / class_name to pick the control (use {op:'find'} first if you need to see what is there), or mode:'physical' to let the engine focus the window and send real keystrokes"
+      # would rename it. Point at the working alternative instead of attempting it.
+      throw "background type needs a field to write into: pass name / name_contains / automation_id / class_name to pick the control, or use mode:'physical' with x/y (or the element) so the engine can click the field to focus it and type real keys -- that path needs no element tree at all"
     }
-    return (Do-PhysicalType $text $windowHandle $restore)
+    return (Do-PhysicalTypeEx $a $null $state)
   }
 
   if ($mode -ne 'physical') {
@@ -1449,7 +1569,7 @@ function Do-Type($a, $state) {
       throw ("background type into '" + $found.item.name + "' failed: no ValuePattern and no control accepted WM_SETTEXT; retry with mode:'physical'")
     }
   }
-  $r = Do-PhysicalType $text (Get-ElementHwnd $found) $restore
+  $r = Do-PhysicalTypeEx $a $found $state
   $r.target = (Get-ElementPublic $found.item)
   return $r
 }
@@ -1481,14 +1601,22 @@ function Do-Key($a, $state) {
       Start-Sleep -Milliseconds 50
     }
     if ([N]::GetForegroundWindow() -ne $target) {
-      Restore-Pointer $saved
+      Restore-Cursor $saved
       throw ("refusing to send keys: could not bring the target window to the foreground (handle " + [int64]$target + ")")
     }
   }
+  # Same lesson as typing: an activated window is not a focused control. When the
+  # caller names a target (x/y or an element), click it first -- otherwise a
+  # Ctrl+A or Enter lands wherever the app's own focus happens to be, which is
+  # how a "send" can silently do nothing.
+  $clicked = $null
+  try { $clicked = Focus-ControlByClick $a $found } catch { Restore-Cursor $saved; throw }
   $vks = Send-KeyCombo $keys $repeat
   Start-Sleep -Milliseconds 80
-  Restore-Pointer $saved
-  return [ordered]@{ ok = $true; strategy = 'physical.keys'; combo = $keys; vks = $vks; pointerRestored = [bool]$restore }
+  Restore-Cursor $saved
+  $out = [ordered]@{ ok = $true; strategy = 'physical.keys'; combo = $keys; vks = $vks; pointerRestored = [bool]$restore }
+  if ($null -ne $clicked) { $out.focusClick = $true; $out.clickedAt = $clicked }
+  return $out
 }
 
 function Test-StepCondition($step) {
@@ -1586,12 +1714,19 @@ function Invoke-Batch($a) {
   $onError = [string](Get-Arg $a 'on_error' 'stop')
   $budget = [int](Get-Arg $a 'timeout_ms' 120000)
   $state = @{ refs = @{} }
+  # Whoever had the desktop when this call started gets it back when the call
+  # ends -- once, not between steps (see Restore-Cursor). A step with
+  # `restore:false` opts out, which is how "focus this app and leave it there"
+  # is expressed.
+  $foreground0 = [N]::GetForegroundWindow()
+  $restoreForeground = $true
   $results = New-Object System.Collections.ArrayList
   $failedAt = -1
   $swAll = [System.Diagnostics.Stopwatch]::StartNew()
   for ($i = 0; $i -lt $steps.Count; $i++) {
     $step = $steps[$i]
     $op = [string](Get-Arg $step 'op' '')
+    if (-not [bool](Get-Arg $step 'restore' $true)) { $restoreForeground = $false }
     $entry = [ordered]@{ i = $i; op = $op }
     $label = [string](Get-Arg $step 'label' '')
     if ($label) { $entry.label = $label }
@@ -1624,6 +1759,18 @@ function Invoke-Batch($a) {
       if (-not $optional -and $onError -ne 'continue') { $failedAt = $i; break }
     }
   }
+  # Hand the desktop back. Doing this here rather than inside each physical step
+  # is what makes multi-step input work: the target app keeps control-level focus
+  # for the whole batch, and the user still gets their window back at the end.
+  $restored = $false
+  if ($restoreForeground -and $foreground0 -ne [IntPtr]::Zero) {
+    try {
+      if ([N]::GetForegroundWindow() -ne $foreground0) {
+        [void][N]::ForceForeground($foreground0)
+        $restored = $true
+      }
+    } catch { }
+  }
   $out = [ordered]@{
     ok         = ($failedAt -lt 0)
     steps      = $steps.Count
@@ -1632,6 +1779,7 @@ function Invoke-Batch($a) {
     total_ms   = [int]$swAll.ElapsedMilliseconds
     results    = $results
   }
+  if ($restored) { $out.foregroundRestored = (Get-WindowInfo $foreground0).title }
   if ($failedAt -ge 0) { $out.error = $results[$failedAt].error }
   return $out
 }

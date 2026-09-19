@@ -135,6 +135,32 @@ Windows 原生的 DSH 电脑操控插件。**一个批量工具**把「找控件
 `wait state:"text_stable"` 取代猜的 sleep：它轮询文本，连续 `stable_ms` 不再变化就把文本返回
 （实测：静态页面 4 次轮询、2.6 秒返回）。元素树没了也能写 —— `focus` + 物理 `type` 用真实按键照样送进输入框。
 
+### 写入侧也不依赖元素树
+
+同一个问题的另一半：树塌了就没有元素可寻址；而**激活窗口并不会把键盘焦点给输入框** ——
+光激活就打字会被丢掉，`Ctrl+A` 选不到东西，Enter 会落到应用**自己**当前的焦点上。
+最后这一条，正是「发送了却没发出去」的成因。
+
+所以 `type` 和 `key` 都接受 `x`/`y`，并**先点一下**——这才是真正移交键盘焦点的动作：
+
+```jsonc
+{"op": "type", "window": "ChatGPT", "mode": "physical", "x": 1436, "y": 1205,
+ "text": "...", "verify": true}                       // 点一下拿焦点 → 真实按键 → 读回自证
+{"op": "key", "keys": "enter", "window": "ChatGPT", "x": 1436, "y": 1205}
+```
+
+在元素树只剩 13 个节点的 ChatGPT 上实测：`strategy: "physical.keystrokes"`、`focusClick: true`、
+`verified: true`，随后在输入框里读到了那段文字。长文本可以走 `"via": "clipboard"` ——
+一次剪贴板写入 + Ctrl+V，取代上千条 `SendInput`（会保存并还原原剪贴板文本）。
+
+两者合起来，一轮对话**完全不需要元素树**：点一下并打字 → Enter → `wait text_stable` → `read`。
+
+还有两件事只有真跑起来才会暴露：
+
+- **前台是「每次调用」归还一次，不是「每一步」归还。** 在同一批 steps 之间归还前台，等于把前台交给用户窗口、让目标应用丢掉控件级焦点 —— 下一步的 Enter / Ctrl+A 就无处可落。**「发送了却没发出去」正是这么来的。** 现在：每个物理步骤后只还原光标，整次调用结束时统一归还前台（结果里报 `foregroundRestored`）；某一步写 `restore:false` 可以退出该行为，用来表达「把焦点留在这个应用上」。
+- **纯「文本不再变化」会停在「正在处理」上。** 实测 `wait state:"text_stable"` 曾在 ChatGPT 的 *「正在回应」* 这个稳定短串上判定完成，返回了一个**还没到的回复**。要给它护栏：
+  `{"op":"wait","state":"text_stable","absent":"正在回应","contains":"ChatGPT 说"}`。
+
 ## 后台优先的三层策略
 
 `mode` 缺省 `"auto"`：先试免聚焦层，不成才退回物理输入。`mode:"background"` **做不到就报错**，
