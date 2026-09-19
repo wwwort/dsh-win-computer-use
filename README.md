@@ -132,6 +132,30 @@ Two tools, deliberately. A separate tool per verb costs schema tokens on every r
 ]}
 ```
 
+## Reading is cheaper than looking
+
+For text content — a chat reply, a log, a status line — read the window as **text** instead of
+capturing it:
+
+```jsonc
+{"op": "read", "window": "ChatGPT", "tail": 2000}                                  // newest 2000 chars
+{"op": "wait", "window": "ChatGPT", "state": "text_stable", "stable_ms": 2500, "tail": 2000}
+```
+
+Measured against the ChatGPT desktop app: one long reply came back as **2,200 characters of quotable
+text in a single ~280 ms call**, where a screenshot costs an image, cannot be quoted exactly, and
+captures whichever window happens to be on top. Document reading order puts the newest content last
+and the app's own chrome first, so a `tail` read is clean by construction.
+
+It is also *more reliable* than element search inside browsers. At one point the ChatGPT window's UIA
+element tree had collapsed to **13 nodes** — caption buttons and empty panes, the entire page gone —
+while `read` still returned **25,722 characters** of page text. So a `find` returning nothing in a
+Chromium app does not mean the control is absent; it can mean the tree was never built.
+
+`wait state: "text_stable"` replaces a guessed sleeps: it polls the text and returns it once it stops
+changing (measured: 4 polls, 2.6 s on a settled page). And when the element tree is gone, writing can
+still work — `focus` plus a physical `type` reaches the composer with real keystrokes.
+
 ## How background operation works
 
 `mode` defaults to `"auto"`: try the focus-free layers first, fall back to physical input.

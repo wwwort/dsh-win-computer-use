@@ -654,6 +654,184 @@ function Get-ElementHwnd($found) {
   return [IntPtr]::Zero
 }
 
+# ------------------------------------------------------------- text reading
+
+# Reading a window as TEXT is almost always the right move when the content is
+# text: a screenshot costs an image per read, cannot be quoted exactly, and is
+# blind to a window behind another one. UI Automation already has the characters.
+function Get-PatternText($el) {
+  if ($null -eq $el) { return $null }
+  $tp = Get-OptionalPattern $el ([System.Windows.Automation.TextPattern]::Pattern)
+  if ($null -ne $tp) {
+    try {
+      $t = [string]$tp.DocumentRange.GetText(-1)
+      if ($t) { return $t }
+    } catch { }
+  }
+  $vp = Get-OptionalPattern $el ([System.Windows.Automation.ValuePattern]::Pattern)
+  if ($null -ne $vp) {
+    try {
+      $t = [string]$vp.Current.Value
+      if ($t) { return $t }
+    } catch { }
+  }
+  return $null
+}
+
+function Find-DocumentElement($root) {
+  try {
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
+    return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  } catch { return $null }
+}
+
+# Fallback for trees with no TextPattern (Win32/WinForms): concatenate the names
+# of the LEAF nodes in document order. Leaves only, because a Chromium parent
+# often repeats its child's text and collecting both would duplicate every line.
+function Get-WalkedText($root, [int]$maxDepth, [int]$maxNodes, $region) {
+  $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+  $queue = New-Object System.Collections.Queue
+  $queue.Enqueue(@{ el = $root; d = 0 })
+  $lines = New-Object System.Collections.ArrayList
+  $seen = 0
+  while ($queue.Count -gt 0 -and $seen -lt $maxNodes) {
+    $item = $queue.Dequeue()
+    $el = $item.el
+    $d = [int]$item.d
+    if ($null -eq $el) { continue }
+    try {
+      $seen++
+      $child = $walker.GetFirstChild($el)
+      $c = $el.Current
+      if ($null -eq $child) {
+        $name = ([string]$c.Name).Trim()
+        if ($name) {
+          $keep = $true
+          if ($null -ne $region) {
+            $r = $c.BoundingRectangle
+            $cx = Safe-Int ($r.X + $r.Width / 2)
+            $cy = Safe-Int ($r.Y + $r.Height / 2)
+            $keep = ($cx -ge $region.x -and $cx -le ($region.x + $region.w) -and $cy -ge $region.y -and $cy -le ($region.y + $region.h))
+          }
+          if ($keep) { [void]$lines.Add($name) }
+        }
+      } elseif ($d -lt $maxDepth) {
+        while ($null -ne $child) {
+          $queue.Enqueue(@{ el = $child; d = ($d + 1) })
+          $child = $walker.GetNextSibling($child)
+        }
+      }
+    } catch { }
+  }
+  return ($lines -join "`n")
+}
+
+function Get-TargetText($a, $state, [switch]$PreferWalk) {
+  $region = $null
+  $spec = [string](Get-Arg $a 'region' '')
+  if ($spec) {
+    $parts = "$spec".Split(',')
+    if ($parts.Count -ne 4) { throw "region must be 'x,y,w,h'" }
+    $region = @{ x = [int]$parts[0]; y = [int]$parts[1]; w = [int]$parts[2]; h = [int]$parts[3] }
+  }
+  $maxDepth = [int](Get-Arg $a 'depth' 16)
+  $maxNodes = [int](Get-Arg $a 'max_nodes' 1200)
+
+  $found = Resolve-ElementTarget $a $state
+  if ($null -ne $found) {
+    if (-not $PreferWalk -and $null -eq $region) {
+      $t = Get-PatternText $found.el
+      if ($t) { return @{ text = $t; source = 'textPattern' } }
+    }
+    $root = $found.el
+  } else {
+    $scope = Resolve-UiaRoot $a
+    $root = $scope.root
+    if ($null -eq $region -and -not $PreferWalk) {
+      $doc = Find-DocumentElement $root
+      if ($null -ne $doc) {
+        $t = Get-PatternText $doc
+        if ($t) { return @{ text = $t; source = 'document.textPattern' } }
+      }
+    }
+  }
+  $walked = Get-WalkedText $root $maxDepth $maxNodes $region
+  return @{ text = $walked; source = $(if ($null -ne $region) { 'elements.region' } else { 'elements' }) }
+}
+
+function Do-Read($a, $state) {
+  $obtained = Get-TargetText $a $state
+  $text = [string]$obtained.text
+  if ($text) {
+    # TextPattern puts U+FFFC where an icon or image sits, and rich content
+    # leaves long runs of blank lines. Neither is information the caller wants.
+    $text = $text.Replace([string][char]0xFFFC, '')
+    $text = [regex]::Replace($text, "(\r?\n){3,}", "`n`n")
+    $text = $text.Trim()
+  }
+  if (-not $text) { $text = '' }
+  $total = $text.Length
+  # Live UI content is read for its END (a reply that just landed, a status, a
+  # log tail), so truncation keeps the tail by default; `from:"head"` flips it.
+  $maxChars = [int](Get-Arg $a 'max_chars' 4000)
+  $tail = [int](Get-Arg $a 'tail' 0)
+  $from = [string](Get-Arg $a 'from' 'tail')
+  $sliced = 'none'
+  if ($tail -gt 0 -and $text.Length -gt $tail) {
+    $text = $text.Substring($text.Length - $tail)
+    $sliced = 'tail'
+  }
+  if ($maxChars -gt 0 -and $text.Length -gt $maxChars) {
+    if ($from -eq 'head') { $text = $text.Substring(0, $maxChars) } else { $text = $text.Substring($text.Length - $maxChars) }
+    $sliced = $(if ($sliced -eq 'tail') { 'tail+max' } else { $from })
+  }
+  $out = [ordered]@{
+    ok         = $true
+    source     = $obtained.source
+    chars      = $text.Length
+    totalChars = $total
+    sliced     = $sliced
+    text       = $text
+  }
+  if ($obtained.source -eq 'elements.region' -and $text.Length -eq 0) {
+    $out.note = 'region scoping found no text: browsers report empty bounds for their text runs, so a rect filter matches nothing there. Drop region and read the tail instead ({op:"read", tail:2000}) -- document reading order puts the newest content last.'
+  }
+  return $out
+}
+
+# Wait until a window's text stops changing: "the reply has finished arriving".
+# Replaces a guessed sleep, which is either too short (read a half-written answer)
+# or too long (waste every time).
+function Wait-TextStable($a) {
+  $timeout = [int](Get-Arg $a 'timeout_ms' 60000)
+  $interval = [int](Get-Arg $a 'interval_ms' 800)
+  $stable = [int](Get-Arg $a 'stable_ms' 2500)
+  $sw = [System.Diagnostics.Stopwatch]::StartNew()
+  $previous = $null
+  $held = 0
+  $polls = 0
+  while ($true) {
+    $polls++
+    $current = [string](Do-Read $a $null).text
+    if ($null -ne $previous -and $current -eq $previous) { $held += $interval } else { $held = 0 }
+    $previous = $current
+    if ($current -and $held -ge $stable) {
+      return [ordered]@{
+        ok        = $true
+        state     = 'text_stable'
+        waited_ms = [int]$sw.ElapsedMilliseconds
+        polls     = $polls
+        chars     = $current.Length
+        text      = $current
+      }
+    }
+    if ($sw.ElapsedMilliseconds -ge $timeout) {
+      throw ("text never settled within " + $timeout + "ms (" + $polls + " reads); pass timeout_ms or check the window")
+    }
+    Start-Sleep -Milliseconds $interval
+  }
+}
+
 function Do-PhysicalClick([int]$x, [int]$y, [string]$button, [int]$count, [bool]$restore, [IntPtr]$window) {
   $saved = $null
   if ($restore) { $saved = Save-Pointer }
@@ -1347,6 +1525,9 @@ function Test-StepCondition($step) {
 }
 
 function Do-Wait($a) {
+  # "the text stopped changing" needs to compare text between polls, so it does
+  # not fit the boolean-condition loop below.
+  if ([string](Get-Arg $a 'state' 'exists') -eq 'text_stable') { return (Wait-TextStable $a) }
   $timeout = [int](Get-Arg $a 'timeout_ms' 15000)
   $interval = [int](Get-Arg $a 'interval_ms' 250)
   # stable_ms: the condition must keep holding for this long before it counts.
@@ -1382,6 +1563,7 @@ function Invoke-Step($op, $step, $state) {
     'windows'   { return (Do-Windows $step) }
     'shot'      { return (Do-Screenshot $step) }
     'uia'       { return (Do-Uia $step) }
+    'read'      { return (Do-Read $step $state) }
     'find'      { return (Do-Find $step $state) }
     'click'     { return (Do-Click $step $state) }
     'type'      { return (Do-Type $step $state) }
@@ -1393,7 +1575,7 @@ function Invoke-Step($op, $step, $state) {
     'wait'      { return (Do-Wait $step) }
     'sleep'     { Start-Sleep -Milliseconds ([int](Get-Arg $step 'ms' 500)); return [ordered]@{ ok = $true } }
     default {
-      throw "unknown op '$op'; valid ops: display, windows, shot, uia, find, click, type, key, mouse, focus, clipboard, process, wait, sleep"
+      throw "unknown op '$op'; valid ops: display, windows, shot, read, uia, find, click, type, key, mouse, focus, clipboard, process, wait, sleep"
     }
   }
 }
