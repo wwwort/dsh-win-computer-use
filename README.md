@@ -38,43 +38,55 @@ write a whole `steps` array correctly on the first attempt. One avoided retry is
 more than the prefix, since a retry is another full context re-send — the most expensive
 single request measured here was **386,879 uncached input tokens**.
 
-## When to delegate (measured)
+## When to delegate (two experiments, measured)
 
-An operation can be run by a **subagent** instead of by the conversation driving it. Whether
-that saves anything depends entirely on how many turns the main agent would have needed — and
-that was measured both ways on the same task, from the same session logs:
+An operation can be run by a **subagent** instead of by the conversation driving it. Whether that is
+worth anything depends on one thing — **how many turns the main agent would have needed** — and both
+cases were measured from the session logs.
 
-| Same task, same machine | Main-agent context per request | Child context per request |
-|---|---|---|
-| measured | **522,925 tokens** | **19,818 tokens** (5 requests, 18,457 → 21,226) |
+**1. A task the main agent can specify without looking** — same machine, both arms:
 
 | Arm | Cost |
 |---|---|
-| Main agent drives it directly (one `computer` batch call) | **522,925** — 1 request |
-| Delegated to a subagent | 525,007 (1 request) + **99,092** (5 child requests) = **624,099** |
+| Main agent drives it directly (one batch call) | **522,925** — 1 request |
+| Delegated to a subagent | 525,007 + **99,092** (5 child requests) = **624,099** |
 
-**Delegating that task cost 19% more.** It was specifiable up front, so one batch call finished
-it in a single turn — and the child, being fresh, needed five. Delegation pays when the main
-agent would otherwise need *more* turns, and there the arithmetic is not close:
+Delegating cost **19% more**: one batch call finished it in one turn, while a fresh child needed five.
+So "operations always go to a subagent" is wrong.
 
-```
-N x 522,925  >  525,007 + K x 19,818        N = main turns, K = child turns
-=> win as soon as N >= 2  (for any K under ~26)
-```
+**2. A cold, multi-turn task** — the window shows a random code; nothing can be typed until it is read
+off the screen, so the main agent cannot finish in one turn:
 
-So the rule is about turns, not about "it is a computer operation":
+| Arm | Cost |
+|---|---|
+| Main agent drives it directly | 559,092 + 560,636 + 562,535 = **1,682,263** — 3 requests |
+| Delegated to a subagent | **565,459** (1 request) + **98,535** (5 child requests) = **663,994** |
 
-- **The whole `steps` array can be written without looking** → call `computer` once.
-- **The next step depends on reading the screen (≥2 turns)** → delegate to a subagent.
-- Pass `run_in_background: false` so the spawn and the result are **one** parent turn. A
-  background spawn needs a second turn to collect the result, which raises the bar to N ≥ 3.
-- A foreground child is **not retained** — `list_agents` reports none afterwards, so it cannot
-  be reused. A background child is durable and can be steered with `send_message`, at the cost
-  of that extra parent turn. Cheap turn, or reusable operator: pick one.
+Delegating saved **61%**. Both runs verified themselves (`status: OK 2776` / `status: OK 7152`) with no
+focus change on either side.
 
-The other half of the argument is not a token count. Everything the operator reads — UI trees,
-screenshots, failed attempts — stays inside the child. Nothing the main context absorbs is free,
-because it is re-sent on **every later request** for the rest of the session.
+The two constants do all the work: **the main agent carried ≈560,000 tokens per request, the child
+≈20,000** — a factor of 28. Since the child's side barely grows with complexity while the main agent's
+grows linearly, the saving scales with the task:
+
+| Turns the main agent would have needed | Main agent | Delegated | Saving |
+|---|---|---|---|
+| 1 (specifiable in one `steps` array) | 0.56M | 0.66M | **−15% (don't)** |
+| 2 | 1.12M | 0.64M | 43% |
+| 3 | 1.68M | 0.66M | **61% (measured)** |
+| 5 | 2.80M | 0.70M | 75% |
+| 10 | 5.60M | 0.80M | 86% |
+| 20 | 11.2M | 0.99M | 91% |
+
+**The more complex the task, the more it saves — asymptotically ~96%.**
+
+### The routing rule
+
+1. **Can the whole `steps` array be written without looking at the screen?** (open X → type Z into Y →
+   press OK → capture) → **do it yourself, one call**. Delegating is more expensive.
+2. **Otherwise** — the next step depends on what the screen says, or the work has several stages →
+   **delegate the whole thing to a subagent**, and do not scout it first: scouting pays the exploration
+   cost once more, at the *expensive* agent's rates.
 
 ### Reuse, measured
 
