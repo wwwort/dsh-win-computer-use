@@ -1234,8 +1234,34 @@ function Do-Type($a, $state) {
       $threw = $false
       try { $vp.SetValue($value) } catch { $threw = $true }
       if (-not $threw) {
-        Start-Sleep -Milliseconds 80
-        return [ordered]@{ ok = $true; strategy = 'uia.valuePattern'; chars = $text.Length; readback = [string]$vp.Current.Value; target = (Get-ElementPublic $found.item) }
+        Start-Sleep -Milliseconds 120
+        # Read back and SAY WHETHER IT MATCHED. Some controls (Chromium
+        # contenteditable such as ProseMirror, which the ChatGPT desktop app
+        # uses) accept SetValue but keep reporting their placeholder as the
+        # value -- so a readback that does not contain the text does not mean
+        # the write failed, and reporting an unqualified success is just as
+        # wrong. The caller gets `verified` plus a note on how to confirm.
+        $back1 = ''
+        try { $back1 = [string]$vp.Current.Value } catch { }
+        $verified = ($back1 -like "*$text*")
+        if (-not $verified) {
+          Start-Sleep -Milliseconds 150
+          $back2 = ''
+          try { $back2 = [string]$vp.Current.Value } catch { }
+          if ($back2 -like "*$text*") { $back1 = $back2; $verified = $true }
+        }
+        $res = [ordered]@{
+          ok       = $true
+          strategy = 'uia.valuePattern'
+          chars    = $text.Length
+          verified = $verified
+          readback = $back1
+          target   = (Get-ElementPublic $found.item)
+        }
+        if (-not $verified) {
+          $res.note = "the control accepted the value but still reports something else (contenteditable fields often report their placeholder); confirm with {op:'shot'} or {op:'find'} before assuming the text is missing"
+        }
+        return $res
       }
     }
     $hwnd = Get-ElementHwnd $found
