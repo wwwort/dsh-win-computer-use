@@ -38,6 +38,59 @@ write a whole `steps` array correctly on the first attempt. One avoided retry is
 more than the prefix, since a retry is another full context re-send — the most expensive
 single request measured here was **386,879 uncached input tokens**.
 
+## When to delegate (measured)
+
+An operation can be run by a **subagent** instead of by the conversation driving it. Whether
+that saves anything depends entirely on how many turns the main agent would have needed — and
+that was measured both ways on the same task, from the same session logs:
+
+| Same task, same machine | Main-agent context per request | Child context per request |
+|---|---|---|
+| measured | **522,925 tokens** | **19,818 tokens** (5 requests, 18,457 → 21,226) |
+
+| Arm | Cost |
+|---|---|
+| Main agent drives it directly (one `computer` batch call) | **522,925** — 1 request |
+| Delegated to a subagent | 525,007 (1 request) + **99,092** (5 child requests) = **624,099** |
+
+**Delegating that task cost 19% more.** It was specifiable up front, so one batch call finished
+it in a single turn — and the child, being fresh, needed five. Delegation pays when the main
+agent would otherwise need *more* turns, and there the arithmetic is not close:
+
+```
+N x 522,925  >  525,007 + K x 19,818        N = main turns, K = child turns
+=> win as soon as N >= 2  (for any K under ~26)
+```
+
+So the rule is about turns, not about "it is a computer operation":
+
+- **The whole `steps` array can be written without looking** → call `computer` once.
+- **The next step depends on reading the screen (≥2 turns)** → delegate to a subagent.
+- Pass `run_in_background: false` so the spawn and the result are **one** parent turn. A
+  background spawn needs a second turn to collect the result, which raises the bar to N ≥ 3.
+- A foreground child is **not retained** — `list_agents` reports none afterwards, so it cannot
+  be reused. A background child is durable and can be steered with `send_message`, at the cost
+  of that extra parent turn. Cheap turn, or reusable operator: pick one.
+
+The other half of the argument is not a token count. Everything the operator reads — UI trees,
+screenshots, failed attempts — stays inside the child. Nothing the main context absorbs is free,
+because it is re-sent on **every later request** for the rest of the session.
+
+### Reuse, measured
+
+A background child is durable — the same operator was handed a second task with `send_message` and
+completed it (`mirror=reuse-arm-ok`, 6 steps, no focus change). Two tasks inside that one child cost
+**120,803** child tokens, and its per-request context only grew from 18,496 to 21,554: reuse does not
+inflate the child.
+
+It still cannot pay for itself. A background child costs the parent **one extra turn per result**, and
+one parent turn is ~525,000 tokens — about **14× the two tasks' entire child budget**. Reuse is worth
+doing for other reasons (the operator keeps what it has learned about this machine, and the parent
+never absorbs a second brief), not to save tokens.
+
+The plugin ships this protocol as the **`computer-operator`** skill, so the guidance costs one
+catalog line until an agent actually loads it.
+
 ## Why this one
 
 | | |
