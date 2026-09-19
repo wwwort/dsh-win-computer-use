@@ -58,6 +58,16 @@ if (typeof patch === 'string') {
 // 3. `private: true` makes `npm publish` refuse outright.
 check('package is publishable (private is not true)', pkg.private !== true)
 
+// 3b. No UTF-8 BOM. Windows PowerShell's `Set-Content -Encoding UTF8` writes one,
+//     so any script that round-trips package.json through PowerShell plants it --
+//     and the BOM ships inside the tarball, where stricter JSON readers choke.
+const pkgBytes = readFileSync(join(root, 'package.json'))
+check(
+  'package.json has no UTF-8 BOM',
+  !(pkgBytes[0] === 0xef && pkgBytes[1] === 0xbb && pkgBytes[2] === 0xbf),
+  pkgBytes[0] === 0xef ? 'starts with EF BB BF' : 'clean',
+)
+
 // 4. Artifacts that the runtime path resolution depends on.
 check('lib/index.js built', existsSync(join(root, 'lib', 'index.js')))
 check('lib/bridge.js built', existsSync(join(root, 'lib', 'bridge.js')))

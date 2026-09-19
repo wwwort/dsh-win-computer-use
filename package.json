@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "dsh-win-computer-use",
     "version":  "0.1.1",
     "description":  "Windows-native computer use for DeepSeek Harness. One `computer` tool takes a list of steps (find element, click, type, wait, screenshot) and runs them inside a single engine request, so a whole task costs one model round trip instead of one per action. Input and screenshots default to focus-free paths (UI Automation patterns, Win32 messages, PrintWindow), and physical input hands the foreground window and cursor back afterwards.",
